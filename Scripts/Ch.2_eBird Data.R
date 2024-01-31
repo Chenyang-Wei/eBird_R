@@ -1,4 +1,5 @@
 ## Source: https://ebird.github.io/ebird-best-practices/ebird.html
+## Last updated: 1/31/2024.
 
 
 ###### Chapter 2: eBird Data ######
@@ -6,9 +7,9 @@
 setwd("C:/Research_Projects/Bird/eBird")
 
 
-# 2.3 Importing eBird data into R -----------------------------------------
+# 2.4 Importing eBird data into R -----------------------------------------
 
-library(auk)
+library(auk) # eBird Data Extraction and Processing in R.
 library(dplyr)
 library(ggplot2)
 library(gridExtra)
@@ -16,85 +17,265 @@ library(lubridate)
 library(readr)
 library(sf)
 
-# Read the checklist data.
+# Read the checklist data (i.e., Sampling Event Data (SED)).
 f_sed <- file.path("Data",
                    "ebd_US-GA_woothr_smp_relAug-2023",
                    "ebd_US-GA_woothr_smp_relAug-2023_sampling.txt")
 checklists <- read_sampling(f_sed)
 glimpse(checklists)
 
-# Import the observation data.
+# Make a histogram of the distribution of distance traveling 
+#   for traveling protocol checklists.
+checklists_Traveling <- checklists %>% 
+  filter(protocol_type == "Traveling")
+ggplot(checklists_Traveling) +
+  aes(x = effort_distance_km) +
+  geom_histogram(
+    aes(y = after_stat(count / sum(count))),
+    binwidth = 1, 
+    fill = "darkgreen", 
+    color = "white") +
+  scale_y_continuous(
+    limits = c(0, NA),
+    labels = scales::label_percent()) +
+  labs(
+    x = "Distance traveled [km]",
+    y = "% of eBird checklists",
+    title = "Distribution of distance traveled on eBird checklists"
+  )
+
+# Make a histogram of the distribution of observation date.
+checklists_ObservationDate <- checklists %>% 
+  select(observation_date, protocol_type)
+checklists_ObservationDate$observation_Year <- 
+  checklists_ObservationDate$observation_date %>% 
+  substring(1, 4) %>% 
+  as.numeric()
+ggplot(checklists_ObservationDate) +
+  aes(x = observation_Year) +
+  geom_histogram(
+    aes(y = after_stat(count / sum(count)),
+        fill = protocol_type),
+    binwidth = 1,
+    color = "white") +
+  scale_y_continuous(
+    limits = c(0, NA),
+    labels = scales::label_percent()) +
+  scale_fill_discrete(name = "Protocol type") +
+  labs(
+    x = "Observation year",
+    y = "% of eBird checklists",
+    title = "Observation year of eBird checklists"
+  )
+
+# Import the observation data (i.e., eBird Basic Dataset (EBD)).
 f_ebd <- file.path("Data",
                    "ebd_US-GA_woothr_smp_relAug-2023",
                    "ebd_US-GA_woothr_smp_relAug-2023.txt")
 observations <- read_ebd(f_ebd)
+# By default:
+# 1) Variable name and type cleanup.
+# 2) Collapsing shared checklist.
+# 3) Taxonomic rollup.
 glimpse(observations)
 
 
-## 2.3.1 Filtering
+## 2.4.1 Shared checklists.
 
-# filter the checklist data
+# Checklists with the same group_identifier 
+#   provide duplicate information on the same birding event 
+#   in the eBird database.
+checklists_shared <- read_sampling(f_sed, unique = FALSE)
+
+# Identify shared checklists.
+checklists_shared |> 
+  filter(!is.na(group_identifier)) |> 
+  select(sampling_event_identifier, group_identifier) |> 
+  arrange(group_identifier) |> 
+  print(n = 15)
+# You can view a checklist on the eBird website 
+#   by appending the sampling_event_identifier to 
+#   the URL https://ebird.org/checklist/.
+
+# Collapse the shared checklists.
+checklists_unique <- auk_unique(
+  checklists_shared, 
+  checklists_only = TRUE)
+nrow(checklists_shared)
+nrow(checklists_unique)
+
+# Check the newly created "checklist_id" variable.
+head(checklists_unique) # S*: non-shared.
+tail(checklists_unique) # G*: shared.
+
+# Check the checklists and observers contributing to
+#   a shared checklist.
+checklists_unique |> 
+  filter(checklist_id == "G7637089") |> 
+  select(checklist_id, 
+         group_identifier, 
+         sampling_event_identifier, 
+         observer_id)
+
+
+## Taxonomic rollup.
+
+# Import one of the auk example datasets without rolling up taxonomy.
+obs_ex <- 
+  system.file("extdata/ebd-rollup-ex.txt", package = "auk") |> 
+  read_ebd(rollup = FALSE)
+
+# Rollup taxonomy.
+obs_ex_rollup <- auk_rollup(obs_ex)
+
+# Identify the taxonomic categories present in each dataset.
+unique(obs_ex$category)
+unique(obs_ex_rollup$category)
+
+# Without rollup, there are three observations.
+obs_ex |>
+  filter(common_name == "Yellow-rumped Warbler") |> 
+  select(checklist_id, 
+         category, 
+         common_name, 
+         subspecies_common_name, 
+         observation_count)
+
+# With rollup, they have been combined.
+obs_ex_rollup |>
+  filter(common_name == "Yellow-rumped Warbler") |> 
+  select(checklist_id, 
+         category, 
+         common_name, 
+         observation_count)
+
+
+# 2.5 Filtering to study region and season --------------------------------
+
+# Filter the checklist data.
+#   Choose observations from June for the last 10 years (2014-2023).
+checklists |> 
+  select(all_species_reported) |> 
+  print()
 checklists <- checklists %>% 
   filter(all_species_reported, # Keep complete checklists.
          protocol_type %in% c("Stationary", "Traveling"),
          year(observation_date) >= 2014, year(observation_date) <= 2023, 
          month(observation_date) == 6)
 
-# filter the observation data
+# Filter the observation data.
+observations |> 
+  select(all_species_reported) |> 
+  print()
 observations <- observations %>% 
   filter(all_species_reported, # Keep complete checklists.
          protocol_type %in% c("Stationary", "Traveling"),
          year(observation_date) >= 2014, year(observation_date) <= 2023, 
          month(observation_date) == 6)
 
+# Convert checklist locations to point features.
+checklists_sf <- checklists |> 
+  select(checklist_id, latitude, longitude) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
 
-# 2.4 Zero-filling --------------------------------------------------------
+# Boundary of the study region, buffered by 1 km.
+study_region_buffered <- read_sf("Data/gis-data.gpkg", layer = "ne_states") |>
+  filter(state_code == "US-GA") |>
+  st_transform(crs = st_crs(checklists_sf)) |>
+  st_buffer(dist = 1000)
+
+# Spatially subset the checklists to those in the study region.
+in_region <- checklists_sf[study_region_buffered, ]
+
+# Join to checklists and observations to remove checklists outside region.
+checklists <- semi_join(checklists, in_region, by = "checklist_id")
+observations <- semi_join(observations, in_region, by = "checklist_id")
+
+# Remove observations without matching checklists.
+observations <- semi_join(observations, checklists, by = "checklist_id")
+
+
+# 2.6 Zero-filling --------------------------------------------------------
 
 # Zero-filling:
-# if there is a record in the SED but no record for a species in the EBD, 
-# then a count of zero individuals of that species can be inferred.
+#   If there is a record in the SED but no record for a species in the EBD, 
+#   then a count of zero individuals of that species can be inferred.
 zf <- auk_zerofill(observations, checklists, collapse = TRUE)
 
-# function to convert time observation to hours since midnight
+# Function to convert time observation to hours since midnight.
 time_to_decimal <- function(x) {
   x <- hms(x, quiet = TRUE)
   hour(x) + minute(x) / 60 + second(x) / 3600
 }
 
-# clean up variables
-zf <- zf %>% 
+# Clean up variables.
+zf <- zf |> 
   mutate(
-    # convert X to NA
-    observation_count = if_else(observation_count == "X", 
-                                NA_character_, observation_count),
+    # Convert count to integer and X to NA
+    #   ignore the warning "NAs introduced by coercion"
     observation_count = as.integer(observation_count),
-    # effort_distance_km to 0 for non-travelling counts
-    effort_distance_km = if_else(protocol_type != "Traveling", 
+    # effort_distance_km to 0 for stationary counts.
+    effort_distance_km = if_else(protocol_type == "Stationary", 
                                  0, effort_distance_km),
-    # convert duration to hours
+    # Convert duration to hours.
     effort_hours = duration_minutes / 60,
-    # speed km/h
+    # Speed km/h.
     effort_speed_kmph = effort_distance_km / effort_hours,
-    # convert time to decimal hours since midnight
+    # Convert time to decimal hours since midnight.
     hours_of_day = time_to_decimal(time_observations_started),
-    # split date into year and day of year
+    # Split date into year and day of year.
     year = year(observation_date),
     day_of_year = yday(observation_date)
   )
 
 
-# 2.5 Accounting for variation in detectability ---------------------------
+# 2.7 Accounting for variation in effort ----------------------------------
 
-# To reduce the variation in detectability between checklists:
-# Restricting checklists to those less than 6 hours in duration 
-# and 10km in length, at speeds below 100km/h, 
-# and with 10 or fewer observers.
-# additional filtering
-zf_filtered <- zf %>% 
-  filter(effort_hours <= 6,
+# Additional filtering for weekly temporal resolution 
+#   and 3-km spatial resolution.
+zf_filtered <- zf |> 
+  filter(protocol_type %in% c("Stationary", "Traveling"),
+         effort_hours <= 6,
          effort_distance_km <= 10,
          effort_speed_kmph <= 100,
          number_observers <= 10)
+
+# Check the remaining variations.
+ggplot(zf_filtered) +
+  aes(x = effort_hours) +
+  geom_histogram(
+    aes(y = after_stat(count / sum(count))),
+    binwidth = 0.25, 
+    fill = "darkgreen", 
+    color = "white") +
+  scale_y_continuous(
+    limits = c(0, NA),
+    labels = scales::label_percent()) +
+  labs(
+    x = "Duration [hours]",
+    y = "% of eBird checklists",
+    title = "Distribution of eBird checklist duration"
+  )
+
+ggplot(zf_filtered) +
+  aes(x = effort_distance_km) +
+  geom_histogram(
+    aes(y = after_stat(count / sum(count))),
+    binwidth = 0.25, 
+    fill = "darkgreen", 
+    color = "white") +
+  scale_y_continuous(
+    limits = c(0, NA),
+    labels = scales::label_percent()) +
+  labs(
+    x = "Distance [km]",
+    y = "% of eBird checklists",
+    title = "Distribution of eBird checklist distance"
+  )
+
+
+## 2.7.1 Spatial precision.
+
 
 
 # 2.6 Test-train split ----------------------------------------------------
